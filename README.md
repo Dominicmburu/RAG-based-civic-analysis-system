@@ -572,4 +572,431 @@ localStorage.setItem(`summary_${userId}`, summary);
 // JWT token in headers
 headers: {
   'Authorization': `Bearer ${userToken}`,
-  'Content-Type': 'application# RAG-based-civic-analysis-system
+  'Content-Type': 'application/json'
+}
+```
+
+2. **Rate Limiting**
+```python
+# Install: pip install flask-limiter
+from flask_limiter import Limiter
+
+limiter = Limiter(app, key_func=lambda: request.remote_addr)
+
+@app.route('/ask', methods=['POST'])
+@limiter.limit("10 per minute")  # Max 10 questions per minute
+def ask_question():
+    # ...
+```
+
+3. **File Size Limits**
+```python
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
+```
+
+4. **Virus Scanning**
+```python
+# Before processing, scan uploaded files
+import clamd
+cd = clamd.ClamdUnixSocket()
+scan_result = cd.scan(filepath)
+```
+
+5. **HTTPS Only in Production**
+```python
+# Force HTTPS
+if not request.is_secure:
+    return redirect(request.url.replace('http://', 'https://'))
+```
+
+---
+
+## Database Integration (Optional)
+
+For production, consider storing document metadata in a database:
+
+```python
+# Using SQLite example
+import sqlite3
+
+def init_db():
+    conn = sqlite3.connect('constitution.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS documents
+                 (user_id TEXT, filename TEXT, upload_date TEXT, 
+                  total_chunks INTEGER, file_path TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS qa_history
+                 (user_id TEXT, question TEXT, answer TEXT, 
+                  timestamp TEXT)''')
+    conn.commit()
+    conn.close()
+
+def save_qa_history(user_id, question, answer):
+    conn = sqlite3.connect('constitution.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO qa_history VALUES (?, ?, ?, ?)',
+              (user_id, question, answer, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+```
+
+**Add endpoint to get history:**
+```python
+@app.route('/history/<user_id>', methods=['GET'])
+def get_qa_history(user_id):
+    conn = sqlite3.connect('constitution.db')
+    c = conn.cursor()
+    c.execute('SELECT question, answer, timestamp FROM qa_history 
+               WHERE user_id=? ORDER BY timestamp DESC LIMIT 20', 
+               (user_id,))
+    history = [{'question': q, 'answer': a, 'timestamp': t} 
+               for q, a, t in c.fetchall()]
+    conn.close()
+    return jsonify(history)
+```
+
+---
+
+## Advanced Features to Add
+
+### 1. Multi-Document Comparison
+
+```python
+@app.route('/compare', methods=['POST'])
+def compare_documents():
+    """Compare two constitutions"""
+    data = request.json
+    user_id1 = data.get('user_id1')
+    user_id2 = data.get('user_id2')
+    aspect = data.get('aspect')  # e.g., "rights and freedoms"
+    
+    # Get summaries from both documents about the aspect
+    results1 = semantic_search(user_id1, aspect, k=5)
+    results2 = semantic_search(user_id2, aspect, k=5)
+    
+    # Generate comparison using GPT
+    comparison_prompt = PromptTemplate(
+        input_variables=["doc1", "doc2", "aspect"],
+        template="""Compare these two constitutional documents on: {aspect}
+
+Document 1:
+{doc1}
+
+Document 2:
+{doc2}
+
+Provide a comparative analysis highlighting similarities, differences, and unique provisions."""
+    )
+    
+    # Return comparison
+```
+
+### 2. Article/Section Extraction
+
+```python
+@app.route('/extract_article', methods=['POST'])
+def extract_article():
+    """Extract specific article or section"""
+    data = request.json
+    user_id = data.get('user_id')
+    article_number = data.get('article_number')  # e.g., "Article 43"
+    
+    # Search for specific article
+    results = semantic_search(user_id, f"Article {article_number}", k=3)
+    
+    return jsonify({
+        "article_number": article_number,
+        "content": results[0]['chunk_text'] if results else None
+    })
+```
+
+### 3. Related Questions Suggestions
+
+```python
+@app.route('/suggest_questions', methods=['POST'])
+def suggest_questions():
+    """Suggest related questions based on current question"""
+    data = request.json
+    question = data.get('question')
+    
+    prompt = PromptTemplate(
+        input_variables=["question"],
+        template="""Based on this question about a constitution: "{question}"
+
+Suggest 5 related follow-up questions that would help users understand the topic better.
+
+Related questions:"""
+    )
+    
+    chain = LLMChain(llm=llm, prompt=prompt)
+    suggestions = chain.run({"question": question})
+    
+    return jsonify({
+        "original_question": question,
+        "suggestions": suggestions.strip().split('\n')
+    })
+```
+
+### 4. Simplified Language Mode
+
+```python
+@app.route('/ask_simple', methods=['POST'])
+def ask_simple():
+    """Answer in simplified language for general public"""
+    # Same as /ask but with modified prompt
+    qa_prompt = PromptTemplate(
+        input_variables=["context", "question"],
+        template="""Explain this constitutional provision in simple, everyday language that a high school student can understand. Avoid legal jargon.
+
+Context: {context}
+Question: {question}
+
+Simple explanation:"""
+    )
+    # Process and return
+```
+
+---
+
+## Testing Checklist
+
+### Functional Tests
+
+- [ ] Upload PDF successfully
+- [ ] Upload DOCX successfully
+- [ ] Reject unsupported file types
+- [ ] Handle corrupted files gracefully
+- [ ] Ask question and get relevant answer
+- [ ] Ask follow-up questions
+- [ ] Generate summary
+- [ ] Download summary as DOCX
+- [ ] Delete document
+- [ ] Handle missing user_id
+- [ ] Handle non-existent user_id
+
+### Performance Tests
+
+- [ ] Upload 1MB document < 10 seconds
+- [ ] Upload 10MB document < 30 seconds
+- [ ] Question response < 10 seconds
+- [ ] Summary generation < 90 seconds
+- [ ] Handle 10 concurrent users
+- [ ] Memory usage stays under 2GB
+
+### Security Tests
+
+- [ ] SQL injection attempts rejected
+- [ ] File upload size limits enforced
+- [ ] XSS attempts sanitized
+- [ ] CORS configured correctly
+- [ ] Rate limiting works
+- [ ] Unauthorized access blocked
+
+---
+
+## Deployment Checklist
+
+### Pre-Deployment
+
+- [ ] Set `debug=False` in production
+- [ ] Use environment variables for all secrets
+- [ ] Configure proper logging
+- [ ] Set up error monitoring (Sentry, etc.)
+- [ ] Configure backup strategy
+- [ ] Test on production-like environment
+- [ ] Load testing completed
+- [ ] Security audit completed
+
+### Production Setup
+
+```bash
+# Install production server
+pip install gunicorn
+
+# Run with gunicorn
+gunicorn -w 4 -b 0.0.0.0:5000 --timeout 120 main:app
+
+# Or use systemd service
+sudo nano /etc/systemd/system/constitution-api.service
+```
+
+**systemd service file:**
+```ini
+[Unit]
+Description=Constitution Q&A API
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/var/www/constitution-api
+Environment="PATH=/var/www/constitution-api/venv/bin"
+Environment="OPENAI_API_KEY=your_key_here"
+ExecStart=/var/www/constitution-api/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 120 main:app
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Nginx Configuration
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+    
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 120s;
+        client_max_body_size 50M;
+    }
+}
+```
+
+---
+
+## Troubleshooting
+
+### Issue: "Slow summary generation"
+
+**Solutions:**
+- Reduce chunks analyzed (lower max_chunks)
+- Use GPT-3.5-turbo instead of GPT-4o
+- Implement streaming responses
+- Cache common summaries
+
+### Issue: "Out of memory"
+
+**Solutions:**
+- Limit concurrent users
+- Clear user_documents dict periodically
+- Use Redis for session storage
+- Implement document expiry (auto-delete after 24h)
+
+### Issue: "Poor answer quality"
+
+**Solutions:**
+- Increase k parameter in semantic search
+- Improve chunking strategy (smaller chunks)
+- Fine-tune embedding model on legal text
+- Add more context in prompts
+
+---
+
+## Cost Estimation
+
+### OpenAI API Costs (GPT-4o)
+
+**Per Question:**
+- Input: ~2,000 tokens (context + question)
+- Output: ~500 tokens (answer)
+- Cost: ~$0.025 per question
+
+**Per Summary:**
+- Input: ~10,000 tokens (large context)
+- Output: ~1,500 tokens (summary)
+- Cost: ~$0.15 per summary
+
+**Monthly Estimates:**
+- 1,000 questions: ~$25
+- 100 summaries: ~$15
+- Total: ~$40/month
+
+### Infrastructure Costs
+
+**Minimum Setup:**
+- VPS (2GB RAM, 2 CPU): ~$10-20/month
+- Domain + SSL: ~$15/year
+- Total: ~$12-22/month
+
+**Production Setup:**
+- VPS (8GB RAM, 4 CPU): ~$40/month
+- Load Balancer: ~$10/month
+- Monitoring: ~$10/month
+- Total: ~$60/month
+
+---
+
+## Maintenance Schedule
+
+### Daily
+- Check error logs
+- Monitor API usage
+- Verify system health
+
+### Weekly
+- Review user feedback
+- Update document corpus if needed
+- Check disk space
+- Backup database
+
+### Monthly
+- Update dependencies
+- Review costs
+- Performance optimization
+- Security patches
+
+### Quarterly
+- Major feature updates
+- User survey
+- Comprehensive testing
+- Disaster recovery drill
+
+---
+
+## Support Documentation
+
+### For End Users
+
+**FAQ Document:**
+
+**Q: What file formats are supported?**
+A: PDF and DOCX files up to 50MB.
+
+**Q: How accurate are the answers?**
+A: Answers are based on the exact text in your uploaded document. Always verify critical information.
+
+**Q: Can I upload multiple documents?**
+A: Currently one document per user. Delete your current document to upload a new one.
+
+**Q: How long is my document stored?**
+A: Documents are stored for your session. Consider them temporary.
+
+**Q: Is my data private?**
+A: Documents are processed through OpenAI's API. See their privacy policy for details.
+
+### For Developers
+
+**API Documentation:**
+- Swagger/OpenAPI spec
+- Rate limits
+- Authentication methods
+- Error codes
+- Example requests
+
+**Integration Guide:**
+- SDK examples
+- Webhook setup
+- Batch processing
+- Custom deployments
+
+---
+
+## Conclusion
+
+This Constitution Q&A system provides:
+- ✅ Easy document upload
+- ✅ Natural language questions
+- ✅ AI-powered answers with sources
+- ✅ Comprehensive summaries
+- ✅ Downloadable reports
+- ✅ Production-ready architecture
+
+**Next Steps:**
+1. Test thoroughly with Postman
+2. Integrate with your frontend
+3. Add authentication
+4. Deploy to production
+5. Gather user feedback
+6. Iterate and improve

@@ -20,9 +20,11 @@ from nltk.tokenize import sent_tokenize
 import uuid
 from datetime import datetime
 import io
+import time
 
 load_dotenv()
 nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)
 
 app = Flask(__name__)
 CORS(app)
@@ -41,13 +43,26 @@ def initialize_models():
     """Initialize embedding and LLM models"""
     global embedding_model, llm
     
+    print("\n" + "="*60)
+    print("🚀 INITIALIZING MODELS")
+    print("="*60)
+    
+    print("📥 Loading embedding model (all-mpnet-base-v2)...")
+    start = time.time()
     embedding_model = SentenceTransformer('all-mpnet-base-v2')
+    print(f"✅ Embedding model loaded in {time.time()-start:.2f}s")
     
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY not set")
     
+    print("🤖 Initializing GPT-4o...")
+    start = time.time()
     llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3)
+    print(f"✅ GPT-4o initialized in {time.time()-start:.2f}s")
+    print("="*60)
+    print("✅ ALL MODELS READY!")
+    print("="*60 + "\n")
 
 def extract_text_from_pdf(file_path):
     """Extract text from PDF"""
@@ -95,32 +110,54 @@ def chunk_text(text, max_tokens=300, overlap_sentences=2):
 
 def create_user_index(user_id, file_path, filename):
     """Create FAISS index for uploaded document"""
+    print("\n" + "="*70)
+    print(f"📄 PROCESSING DOCUMENT: {filename}")
+    print(f"   User ID: {user_id}")
+    print("="*70)
+    
     # Extract text based on file type
+    print("📖 Step 1/5: Extracting text from document...")
+    start = time.time()
     if filename.endswith('.pdf'):
         text = extract_text_from_pdf(file_path)
     elif filename.endswith('.docx'):
         text = extract_text_from_docx(file_path)
     else:
         raise ValueError("Unsupported file format")
+    word_count = len(text.split())
+    print(f"   ✅ Extracted {word_count:,} words in {time.time()-start:.2f}s")
     
     # Clean and chunk
+    print("🧹 Step 2/5: Cleaning text...")
+    start = time.time()
     text = clean_text(text)
+    print(f"   ✅ Text cleaned in {time.time()-start:.2f}s")
+    
+    print("✂️  Step 3/5: Chunking text...")
+    start = time.time()
     chunks = chunk_text(text)
+    print(f"   ✅ Created {len(chunks)} chunks in {time.time()-start:.2f}s")
     
     if not chunks:
         raise ValueError("No text extracted from document")
     
     # Create embeddings
+    print("🧠 Step 4/5: Creating embeddings...")
+    start = time.time()
     embeddings = embedding_model.encode(
         chunks,
         show_progress_bar=False,
         convert_to_numpy=True,
         normalize_embeddings=True
     )
+    print(f"   ✅ Embeddings created in {time.time()-start:.2f}s")
     
     # Create FAISS index
+    print("📊 Step 5/5: Building FAISS index...")
+    start = time.time()
     index = faiss.IndexFlatIP(embeddings.shape[1])
     index.add(embeddings)
+    print(f"   ✅ Index built in {time.time()-start:.2f}s")
     
     # Store metadata
     metadata = {
@@ -134,6 +171,12 @@ def create_user_index(user_id, file_path, filename):
         'index': index,
         'metadata': metadata
     }
+    
+    print("="*70)
+    print(f"✅ DOCUMENT PROCESSING COMPLETE!")
+    print(f"   Total chunks: {len(chunks)}")
+    print(f"   Total words: {word_count:,}")
+    print("="*70 + "\n")
     
     return metadata
 
@@ -201,11 +244,17 @@ def health_check():
 @app.route('/upload', methods=['POST'])
 def upload_document():
     """Upload and process constitutional document"""
+    print("\n" + "🔵"*35)
+    print("📤 NEW UPLOAD REQUEST RECEIVED")
+    print("🔵"*35)
+    
     if 'file' not in request.files:
+        print("❌ Error: No file provided")
         return jsonify({"error": "No file provided"}), 400
     
     file = request.files['file']
     if file.filename == '':
+        print("❌ Error: No file selected")
         return jsonify({"error": "No file selected"}), 400
     
     # Generate user ID (in production, use authenticated user ID)
@@ -214,7 +263,10 @@ def upload_document():
     # Save file
     filename = file.filename
     filepath = os.path.join(UPLOAD_FOLDER, f"{user_id}_{filename}")
+    
+    print(f"💾 Saving file: {filename}")
     file.save(filepath)
+    print(f"✅ File saved to: {filepath}")
     
     try:
         metadata = create_user_index(user_id, filepath, filename)
@@ -224,6 +276,7 @@ def upload_document():
             "metadata": metadata
         })
     except Exception as e:
+        print(f"\n❌ ERROR: {str(e)}\n")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/ask', methods=['POST'])
@@ -238,6 +291,8 @@ def ask_question():
     
     if user_id not in user_documents:
         return jsonify({"error": "Document not found. Please upload first."}), 404
+    
+    print(f"\n❓ Question received: {question}")
     
     # Search relevant chunks
     results = semantic_search(user_id, question, k=5)
@@ -266,6 +321,8 @@ Answer:"""
     chain = LLMChain(llm=llm, prompt=qa_prompt)
     answer = chain.run({"context": context, "question": question})
     
+    print(f"✅ Answer generated\n")
+    
     return jsonify({
         "question": question,
         "answer": answer,
@@ -283,6 +340,8 @@ def generate_summary():
     
     if user_id not in user_documents:
         return jsonify({"error": "Document not found"}), 404
+    
+    print(f"\n📝 Generating summary for user: {user_id}")
     
     doc_data = user_documents[user_id]
     chunks = doc_data['metadata']['chunks']
@@ -324,6 +383,8 @@ Summary:"""
     
     chain = LLMChain(llm=llm, prompt=summary_prompt)
     summary = chain.run({"document": full_text, "filename": filename})
+    
+    print(f"✅ Summary generated\n")
     
     return jsonify({
         "summary": summary,
@@ -381,6 +442,8 @@ def delete_user_document(user_id):
     if user_id not in user_documents:
         return jsonify({"error": "Document not found"}), 404
     
+    print(f"\n🗑️  Deleting document for user: {user_id}")
+    
     del user_documents[user_id]
     
     # Clean up file
@@ -388,10 +451,13 @@ def delete_user_document(user_id):
         if file.startswith(user_id):
             os.remove(os.path.join(UPLOAD_FOLDER, file))
     
+    print(f"✅ Document deleted\n")
+    
     return jsonify({"message": "Document deleted successfully"})
 
-if __name__ == '__main__':
-    print("Initializing models...")
+# Initialize models before first request
+with app.app_context():
     initialize_models()
-    print("Server ready!")
+
+if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
